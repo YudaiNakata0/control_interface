@@ -1,0 +1,4 @@
+# Window
+- PySide6: 6.11.1
+  - PySide6_Addons: 6.11.1
+  - PySide6_Essentials: 6.11.1
