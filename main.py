@@ -6,31 +6,26 @@ from PySide6 import QtCore, QtWidgets, QtGui
 class MyWidget(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
+        # layout: grid style
+        self.layout = QtWidgets.QGridLayout(self)
+        self.button_pen = self.generate_button(name="Drive Pen", row=0, column=0)
+        # sub layout for servo on/off
+        self.servo_layout = QtWidgets.QHBoxLayout()
+        self.button_servo_on = self.generate_button(name="Servo On", sub_layout=self.servo_layout)
+        self.button_servo_off = self.generate_button(name="Servo Off", sub_layout=self.servo_layout)
+        self.layout.addLayout(self.servo_layout, 0, 1)
 
-        self.hello = ["Hallo Welt", "Hei maailma", "Hola Mundo", "Привет мир"]
+    # @QtCore.Slot()
 
-        self.button = QtWidgets.QPushButton("Click me!")
-        self.text = QtWidgets.QLabel("Hello World",
-                                     alignment=QtCore.Qt.AlignCenter)
-
-        self.layout = QtWidgets.QVBoxLayout(self)
-        self.layout.addWidget(self.text)
-        self.layout.addWidget(self.button)
-
-        self.button.clicked.connect(self.magic)
-        self.button_pen = self.generate_button("Drive Pen")
-        self.button_servo_on = self.generate_button("Servo On")
-        self.button_servo_off = self.generate_button("Servo Off")
-
-    @QtCore.Slot()
-    def magic(self):
-        self.text.setText(random.choice(self.hello))
-
-    def generate_button(self, name, xpos=100, ypos=100, width=100, height=50):
+    # button settings
+    def generate_button(self, name, sub_layout=False, row=0, column=0, height=1, width=1):
         button = QtWidgets.QPushButton()
         button.setObjectName(name)
         button.setText(name)
-        self.layout.addWidget(button)
+        if sub_layout == False:
+            self.layout.addWidget(button, row, column, height, width)
+        else:
+            sub_layout.addWidget(button)
         return button
 
 if __name__ == "__main__":
