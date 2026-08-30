@@ -3,8 +3,12 @@ import sys
 import random
 from PySide6 import QtCore, QtWidgets, QtGui
 import rospy
+import numpy as np
 from std_msgs.msg import Empty, Bool
 from aerial_robot_msgs.msg import FlightNav
+from nav_msgs.msg import Odometry
+from scipy.spatial.transform import Rotation
+from geometry_msgs.msg import Pose, Quaternion
 
 class MyWidget(QtWidgets.QWidget):
     def __init__(self):
@@ -22,7 +26,7 @@ class MyWidget(QtWidgets.QWidget):
         # layout: grid style
         self.layout = QtWidgets.QGridLayout(self)
         # text instruction
-        self.setup_instruction()
+        self.setup_instruction(row=1, column=0)
 
         # self.layout.addWidget()
         # button for driving pen
@@ -38,11 +42,14 @@ class MyWidget(QtWidgets.QWidget):
         self.layout.addLayout(self.servo_layout, 3, 0)
 
         # input line for selecting robot
-        self.setup_robot_selection()
+        self.setup_robot_selection(row=0, column=0)
 
-    # @QtCore.Slot()
+        # state viewer
+        self.setup_state_viewer(row=1, column=1)
+        # onboard camera viewer
+        self.setup_image_viewer(row=2, column=1)
 
-    def setup_instruction(self):
+    def setup_instruction(self, row=1, column=0, width=1, height=1):
         msg = """
         <b>Instruction:</b><br>
         ---------------------------<br>
@@ -70,7 +77,7 @@ class MyWidget(QtWidgets.QWidget):
         font-size: 16px;
         }
         """)
-        self.layout.addWidget(text_instruction, 1, 0, 1, 1)
+        self.layout.addWidget(text_instruction, row, column, width, height)
 
     def setup_robot_controller(self, namespace):
         self.pub_start = rospy.Publisher(namespace + "/teleop_command/start", Empty, queue_size=1)
@@ -83,14 +90,14 @@ class MyWidget(QtWidgets.QWidget):
         self.z_vel = rospy.get_param("~z_vel", 0.05)
         self.yaw_vel = rospy.get_param("~yaw_vel", 0.05)
 
-    def setup_robot_selection(self):
+    def setup_robot_selection(self, text=False, row=0, column=0, width=1, height=1):
         self.input_label = QtWidgets.QLabel("Robot namespace: " + self.robot_ns)
         self.input_layout = QtWidgets.QHBoxLayout()
         self.input_layout.addWidget(self.input_label)
         self.input_line = QtWidgets.QLineEdit(self)
         self.input_layout.addWidget(self.input_line)
         self.input_line.returnPressed.connect(self.returnPressedLineedit)
-        self.layout.addLayout(self.input_layout, 0, 0)
+        self.layout.addLayout(self.input_layout, row, column, width, height)
 
     def returnPressedLineedit(self):
         # re-create publisher with new name
@@ -103,12 +110,6 @@ class MyWidget(QtWidgets.QWidget):
         self.setup_robot_controller(self.input_line.text())
         self.robot_ns = self.input_line.text()
         self.input_label.setText("Robot namespace: " + self.robot_ns)
-
-    def on_drive_pen(self):
-        self.pub_drive_pen.publish(Empty())
-
-    def on_servo(self, state):
-        self.pub_servo.publish(Bool(data=state))
 
     # keyboard teleop (see reference/keyboard_command.py)
     def keyPressEvent(self, event):
@@ -171,6 +172,39 @@ class MyWidget(QtWidgets.QWidget):
         else:
             sub_layout.addWidget(button)
         return button
+
+    def on_drive_pen(self):
+        self.pub_drive_pen.publish(Empty())
+
+    def on_servo(self, state):
+        self.pub_servo.publish(Bool(data=state))
+
+    def setup_state_viewer(self, row=1, column=1, width=1, height=1):
+        self.sub_state = rospy.Subscriber(self.robot_ns + "/uav/cog/odom", Odometry, self.cb_odom)
+        msg = """
+        <b>COG</b><br>
+        x:     ---<br>
+        y:     ---<br>
+        z:     ---<br>
+        roll:  ---<br>
+        pitch: ---<br>
+        yaw:   ---<br>
+        """
+        self.state_text = QtWidgets.QLabel(msg)
+        self.layout.addWidget(self.state_text, row, column, width, height)
+
+    def cb_odom(self, msg):
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
+        z = msg.pose.pose.position.z
+        rotation = Rotation.from_quat(np.array([msg.pose.pose.orientation.x,
+                                                msg.pose.pose.orientation.y,
+                                                msg.pose.pose.orientation.z,
+                                                msg.pose.pose.orientation.w]))
+        roll, pitch, yaw = rotation.as_euler("xyz")
+
+    def setup_image_viewer(self, row=2, column=1):
+        pass
 
 if __name__ == "__main__":
     rospy.init_node("control_interface", anonymous=True)
