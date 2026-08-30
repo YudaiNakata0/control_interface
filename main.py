@@ -191,6 +191,8 @@ class MyWidget(QtWidgets.QWidget):
         yaw:   ---<br>
         """
         self.state_text = QtWidgets.QLabel(msg)
+        self.state_text.setStyleSheet("QLabel { font-family: monospace; }")
+        self.state_text.setFixedWidth(200)
         self.layout.addWidget(self.state_text, row, column, width, height)
 
     def cb_odom(self, msg):
@@ -202,6 +204,17 @@ class MyWidget(QtWidgets.QWidget):
                                                 msg.pose.pose.orientation.z,
                                                 msg.pose.pose.orientation.w]))
         roll, pitch, yaw = rotation.as_euler("xyz")
+
+        msg = """
+        <b>COG</b><br>
+        x:     {:+7.3f}<br>
+        y:     {:+7.3f}<br>
+        z:     {:+7.3f}<br>
+        roll:  {:+7.3f}<br>
+        pitch: {:+7.3f}<br>
+        yaw:   {:+7.3f}<br>
+        """.format(x, y, z, roll, pitch, yaw)
+        self.state_text.setText(msg)
 
     def setup_image_viewer(self, row=2, column=1):
         pass
