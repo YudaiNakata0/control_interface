@@ -14,16 +14,8 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_servo = rospy.Publisher("/servo", Bool, queue_size=1)
 
         # ROS publishers for keyboard teleop (see reference/keyboard_command.py)
-        self.pub_start = rospy.Publisher("/teleop_command/start", Empty, queue_size=1)
-        self.pub_takeoff = rospy.Publisher("/teleop_command/takeoff", Empty, queue_size=1)
-        self.pub_land = rospy.Publisher("/teleop_command/land", Empty, queue_size=1)
-        self.pub_force_landing = rospy.Publisher("/teleop_command/force_landing", Empty, queue_size=1)
-        self.pub_halt = rospy.Publisher("/teleop_command/halt", Empty, queue_size=1)
-        self.pub_nav = rospy.Publisher("/uav/nav", FlightNav, queue_size=1)
-        self.xy_vel = rospy.get_param("~xy_vel", 0.05)
-        self.z_vel = rospy.get_param("~z_vel", 0.05)
-        self.yaw_vel = rospy.get_param("~yaw_vel", 0.05)
-
+        self.robot_ns = "gimbalrotor"
+        self.setup_robot_controller(self.robot_ns)
         # receive key events on the window regardless of which child widget has focus
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
 
@@ -34,7 +26,7 @@ class MyWidget(QtWidgets.QWidget):
 
         # self.layout.addWidget()
         # button for driving pen
-        self.button_pen = self.generate_button(name="Drive Pen", row=1, column=0)
+        self.button_pen = self.generate_button(name="Drive Pen", row=2, column=0)
         self.button_pen.clicked.connect(self.on_drive_pen)
         # button for driving servo
         # sub layout for servo on/off
@@ -43,7 +35,10 @@ class MyWidget(QtWidgets.QWidget):
         self.button_servo_off = self.generate_button(name="Servo Off", sub_layout=self.servo_layout)
         self.button_servo_on.clicked.connect(lambda: self.on_servo(True))
         self.button_servo_off.clicked.connect(lambda: self.on_servo(False))
-        self.layout.addLayout(self.servo_layout, 1, 1)
+        self.layout.addLayout(self.servo_layout, 3, 0)
+
+        # input line for selecting robot
+        self.setup_robot_selection()
 
     # @QtCore.Slot()
 
@@ -75,7 +70,39 @@ class MyWidget(QtWidgets.QWidget):
         font-size: 16px;
         }
         """)
-        self.layout.addWidget(text_instruction, 0, 0, 1, 1)
+        self.layout.addWidget(text_instruction, 1, 0, 1, 1)
+
+    def setup_robot_controller(self, namespace):
+        self.pub_start = rospy.Publisher(namespace + "/teleop_command/start", Empty, queue_size=1)
+        self.pub_takeoff = rospy.Publisher(namespace + "/teleop_command/takeoff", Empty, queue_size=1)
+        self.pub_land = rospy.Publisher(namespace + "/teleop_command/land", Empty, queue_size=1)
+        self.pub_force_landing = rospy.Publisher(namespace + "/teleop_command/force_landing", Empty, queue_size=1)
+        self.pub_halt = rospy.Publisher(namespace + "/teleop_command/halt", Empty, queue_size=1)
+        self.pub_nav = rospy.Publisher(namespace + "/uav/nav", FlightNav, queue_size=1)
+        self.xy_vel = rospy.get_param("~xy_vel", 0.05)
+        self.z_vel = rospy.get_param("~z_vel", 0.05)
+        self.yaw_vel = rospy.get_param("~yaw_vel", 0.05)
+
+    def setup_robot_selection(self):
+        self.input_label = QtWidgets.QLabel("Robot namespace: " + self.robot_ns)
+        self.input_layout = QtWidgets.QHBoxLayout()
+        self.input_layout.addWidget(self.input_label)
+        self.input_line = QtWidgets.QLineEdit(self)
+        self.input_layout.addWidget(self.input_line)
+        self.input_line.returnPressed.connect(self.returnPressedLineedit)
+        self.layout.addLayout(self.input_layout, 0, 0)
+
+    def returnPressedLineedit(self):
+        # re-create publisher with new name
+        self.pub_start.unregister()
+        self.pub_takeoff.unregister()
+        self.pub_land.unregister()
+        self.pub_force_landing.unregister()
+        self.pub_halt.unregister()
+        self.pub_nav.unregister()
+        self.setup_robot_controller(self.input_line.text())
+        self.robot_ns = self.input_line.text()
+        self.input_label.setText("Robot namespace: " + self.robot_ns)
 
     def on_drive_pen(self):
         self.pub_drive_pen.publish(Empty())
