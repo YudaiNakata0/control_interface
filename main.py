@@ -52,9 +52,9 @@ class MyWidget(QtWidgets.QWidget):
         # onboard camera viewer
         self.setup_image_viewer(row=1, column=1)
 
-        # grid ratio
-        self.layout.setColumnStretch(0, 1)
-        self.layout.setColumnStretch(1, 1)
+        # grid ratio: column 1 (image/state viewer side) always gets 70% of the window width
+        self.layout.setColumnStretch(0, 3)
+        self.layout.setColumnStretch(1, 7)
         self.layout.setRowStretch(0, 1)
         self.layout.setRowStretch(1, 2)
         self.layout.setRowStretch(2, 1)
@@ -233,11 +233,14 @@ class MyWidget(QtWidgets.QWidget):
         # dropdown to choose which of the two topics is shown in the viewer below
         self.image_source = "raw"
         self.image_source_combo = QtWidgets.QComboBox()
-        self.image_source_combo.addItem("Image (raw)", "raw")
-        self.image_source_combo.addItem("CompressedImage", "compressed")
+        self.image_source_combo.addItem(QtGui.QIcon(), "Image (raw)", "raw")
+        self.image_source_combo.addItem(QtGui.QIcon(), "CompressedImage", "compressed")
         self.image_source_combo.currentIndexChanged.connect(self.on_image_source_changed)
 
         self.image_viewer = QtWidgets.QLabel()
+        # let the label grow/shrink with its column instead of sizing to the pixmap
+        self.image_viewer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        self.image_viewer.setScaledContents(True)
         pixmap = QtGui.QPixmap("image.png")
         self.image_viewer.setPixmap(pixmap)
 
