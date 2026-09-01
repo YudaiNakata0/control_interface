@@ -12,11 +12,19 @@ from geometry_msgs.msg import Pose, Quaternion
 from sensor_msgs.msg import Image, CompressedImage
 
 class MyWidget(QtWidgets.QWidget):
+    # rospy delivers subscriber callbacks on background threads, but Qt widgets
+    # may only be touched from the GUI thread. These signals are emitted from
+    # the callback threads and, since sender/receiver threads differ, Qt
+    # auto-queues the connection so the connected slot below runs on the GUI
+    # thread instead.
+    odom_updated = QtCore.Signal(float, float, float, float, float, float)
+    image_updated = QtCore.Signal(QtGui.QImage)
+
     def __init__(self):
         super().__init__()
         # ROS publishers
-        self.pub_drive_pen = rospy.Publisher("/drive_pen", Empty, queue_size=1)
-        self.pub_servo = rospy.Publisher("/servo", Bool, queue_size=1)
+        self.pub_drive_pen = rospy.Publisher("/pen_switch", Empty, queue_size=1)
+        self.pub_servo = rospy.Publisher("/servo_switch", Bool, queue_size=1)
 
         # ROS publishers for keyboard teleop (see reference/keyboard_command.py)
         self.robot_ns = "gimbalrotor"
@@ -191,6 +199,7 @@ class MyWidget(QtWidgets.QWidget):
 
     def setup_state_viewer(self, row=1, column=1, width=1, height=1):
         self.sub_state = rospy.Subscriber(self.robot_ns + "/uav/cog/odom", Odometry, self.cb_odom)
+        self.odom_updated.connect(self.update_state_text)
         msg = """
         <b>COG</b><br>
         x:     ---<br>
@@ -214,7 +223,11 @@ class MyWidget(QtWidgets.QWidget):
                                                 msg.pose.pose.orientation.z,
                                                 msg.pose.pose.orientation.w]))
         roll, pitch, yaw = rotation.as_euler("xyz")
+        # emit instead of touching the widget here: this callback runs on rospy's
+        # subscriber thread, not the GUI thread
+        self.odom_updated.emit(x, y, z, roll, pitch, yaw)
 
+    def update_state_text(self, x, y, z, roll, pitch, yaw):
         msg = """
         <b>COG</b><br>
         x:     {:+7.3f}<br>
@@ -229,6 +242,7 @@ class MyWidget(QtWidgets.QWidget):
     def setup_image_viewer(self, row=2, column=1, width=1, height=1):
         self.sub_image = rospy.Subscriber("/usb_cam/image_raw", Image, self.cb_image)
         self.sub_compressed_image = rospy.Subscriber("/usb_cam/image_raw/compressed", CompressedImage, self.cb_compressed_image)
+        self.image_updated.connect(self.update_image_pixmap)
 
         # dropdown to choose which of the two topics is shown in the viewer below
         self.image_source = "raw"
@@ -270,7 +284,9 @@ class MyWidget(QtWidgets.QWidget):
             return
         # .copy() so the QImage owns its pixel data once msg.data goes out of scope
         image = QtGui.QImage(msg.data, msg.width, msg.height, msg.step, qt_format).copy()
-        self.image_viewer.setPixmap(QtGui.QPixmap.fromImage(image))
+        # emit instead of touching the widget here: this callback runs on rospy's
+        # subscriber thread, not the GUI thread
+        self.image_updated.emit(image)
 
     def cb_compressed_image(self, msg):
         if self.image_source != "compressed":
@@ -280,6 +296,9 @@ class MyWidget(QtWidgets.QWidget):
         if image.isNull():
             rospy.logwarn_throttle(5, "cb_compressed_image: failed to decode image (format='%s')" % msg.format)
             return
+        self.image_updated.emit(image)
+
+    def update_image_pixmap(self, image):
         self.image_viewer.setPixmap(QtGui.QPixmap.fromImage(image))
 
 if __name__ == "__main__":
