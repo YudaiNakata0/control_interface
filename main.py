@@ -104,9 +104,9 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_force_landing = rospy.Publisher(namespace + "/teleop_command/force_landing", Empty, queue_size=1)
         self.pub_halt = rospy.Publisher(namespace + "/teleop_command/halt", Empty, queue_size=1)
         self.pub_nav = rospy.Publisher(namespace + "/uav/nav", FlightNav, queue_size=1)
-        self.xy_vel = rospy.get_param("~xy_vel", 0.05)
-        self.z_vel = rospy.get_param("~z_vel", 0.05)
-        self.yaw_vel = rospy.get_param("~yaw_vel", 0.05)
+        self.xy_vel = rospy.get_param("~xy_vel", 0.02)
+        self.z_vel = rospy.get_param("~z_vel", 0.02)
+        self.yaw_vel = rospy.get_param("~yaw_vel", 0.02)
 
     def setup_robot_selection(self, text=False, row=0, column=0, width=1, height=1):
         self.input_label = QtWidgets.QLabel("Robot namespace: " + self.robot_ns)
