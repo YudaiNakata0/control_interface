@@ -8,7 +8,7 @@ from std_msgs.msg import Empty, Bool
 from aerial_robot_msgs.msg import FlightNav
 from nav_msgs.msg import Odometry
 from scipy.spatial.transform import Rotation
-from geometry_msgs.msg import Pose, Quaternion
+from geometry_msgs.msg import Pose, Quaternion, PoseStamped
 from sensor_msgs.msg import Image, CompressedImage
 
 class MyWidget(QtWidgets.QWidget):
@@ -55,8 +55,13 @@ class MyWidget(QtWidgets.QWidget):
         # input line for selecting robot
         self.setup_robot_selection(row=0, column=0)
 
-        # state viewer
-        self.setup_state_viewer(row=2, column=1)
+        # state viewer, with target pose control placed beside it
+        self.setup_state_viewer()
+        self.setup_target_pose_control()
+        state_row_layout = QtWidgets.QHBoxLayout()
+        state_row_layout.addWidget(self.state_text)
+        state_row_layout.addWidget(self.target_pose_widget)
+        self.layout.addLayout(state_row_layout, 2, 1)
         # onboard camera viewer
         self.setup_image_viewer(row=1, column=1)
 
@@ -104,6 +109,7 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_force_landing = rospy.Publisher(namespace + "/teleop_command/force_landing", Empty, queue_size=1)
         self.pub_halt = rospy.Publisher(namespace + "/teleop_command/halt", Empty, queue_size=1)
         self.pub_nav = rospy.Publisher(namespace + "/uav/nav", FlightNav, queue_size=1)
+        self.pub_target_pose = rospy.Publisher(namespace + "/target_pose", PoseStamped, queue_size=10)
         self.xy_vel = rospy.get_param("~xy_vel", 0.02)
         self.z_vel = rospy.get_param("~z_vel", 0.02)
         self.yaw_vel = rospy.get_param("~yaw_vel", 0.02)
@@ -125,6 +131,7 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_force_landing.unregister()
         self.pub_halt.unregister()
         self.pub_nav.unregister()
+        self.pub_target_pose.unregister()
         self.setup_robot_controller(self.input_line.text())
         self.robot_ns = self.input_line.text()
         self.input_label.setText("Robot namespace: " + self.robot_ns)
@@ -197,7 +204,7 @@ class MyWidget(QtWidgets.QWidget):
     def on_servo(self, state):
         self.pub_servo.publish(Bool(data=state))
 
-    def setup_state_viewer(self, row=1, column=1, width=1, height=1):
+    def setup_state_viewer(self):
         self.sub_state = rospy.Subscriber(self.robot_ns + "/uav/cog/odom", Odometry, self.cb_odom)
         self.odom_updated.connect(self.update_state_text)
         msg = """
@@ -212,7 +219,6 @@ class MyWidget(QtWidgets.QWidget):
         self.state_text = QtWidgets.QLabel(msg)
         self.state_text.setStyleSheet("QLabel { font-family: monospace; }")
         self.state_text.setFixedWidth(200)
-        self.layout.addWidget(self.state_text, row, column, width, height)
 
     def cb_odom(self, msg):
         x = msg.pose.pose.position.x
@@ -238,6 +244,65 @@ class MyWidget(QtWidgets.QWidget):
         yaw:   {:+7.3f}<br>
         """.format(x, y, z, roll, pitch, yaw)
         self.state_text.setText(msg)
+
+    # number of preset x/y/z input+send panels shown side by side, all publishing to the same topic
+    NUM_TARGET_POSE_PANELS = 3
+
+    def setup_target_pose_control(self):
+        self.target_pose_widget = QtWidgets.QWidget()
+        panels_layout = QtWidgets.QHBoxLayout(self.target_pose_widget)
+        panels_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.target_pose_inputs = []
+        for index in range(self.NUM_TARGET_POSE_PANELS):
+            panels_layout.addWidget(self.create_target_pose_panel(index))
+
+    def create_target_pose_panel(self, index):
+        panel = QtWidgets.QWidget()
+        pose_layout = QtWidgets.QVBoxLayout(panel)
+        pose_layout.setContentsMargins(0, 0, 0, 0)
+
+        pose_layout.addWidget(QtWidgets.QLabel("<b>Target Pose {}</b>".format(index + 1)))
+
+        inputs = {}
+        for axis in ("x", "y", "z"):
+            axis_layout = QtWidgets.QHBoxLayout()
+            axis_layout.addWidget(QtWidgets.QLabel(axis + ":"))
+            line_edit = QtWidgets.QLineEdit("0.0")
+            line_edit.setFixedWidth(80)
+            axis_layout.addWidget(line_edit)
+            pose_layout.addLayout(axis_layout)
+            inputs[axis] = line_edit
+        self.target_pose_inputs.append(inputs)
+
+        button_send_pose = self.generate_button(name="Send Pose {}".format(index + 1), sub_layout=pose_layout)
+        button_send_pose.clicked.connect(lambda checked=False, index=index: self.on_send_target_pose(index))
+        return panel
+
+    def on_send_target_pose(self, index):
+        inputs = self.target_pose_inputs[index]
+        try:
+            x = float(inputs["x"].text())
+            y = float(inputs["y"].text())
+            z = float(inputs["z"].text())
+        except ValueError:
+            rospy.logwarn("Invalid target pose input. Enter numeric x y z")
+            return
+
+        if z < 0.7:
+            rospy.logwarn("too low z value")
+            return
+
+        msg = PoseStamped()
+        msg.header.frame_id = "world"
+        msg.header.stamp = rospy.Time.now() + rospy.Duration(10.0)
+        msg.pose.position.x = x
+        msg.pose.position.y = y
+        msg.pose.position.z = z
+        msg.pose.orientation.w = 1.0
+
+        self.pub_target_pose.publish(msg)
+        rospy.loginfo("Published PoseStamped: (%.3f, %.3f, %.3f) time=now+10s", x, y, z)
 
     def setup_image_viewer(self, row=2, column=1, width=1, height=1):
         self.sub_image = rospy.Subscriber("/usb_cam/image_raw", Image, self.cb_image)
