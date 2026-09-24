@@ -8,7 +8,7 @@ from std_msgs.msg import Empty, Bool
 from aerial_robot_msgs.msg import FlightNav
 from nav_msgs.msg import Odometry
 from scipy.spatial.transform import Rotation
-from geometry_msgs.msg import Pose, Quaternion, PoseStamped
+from geometry_msgs.msg import Pose, Quaternion, PoseStamped, Vector3, Vector3Stamped
 from sensor_msgs.msg import Image, CompressedImage
 
 class MyWidget(QtWidgets.QWidget):
@@ -17,7 +17,7 @@ class MyWidget(QtWidgets.QWidget):
     # the callback threads and, since sender/receiver threads differ, Qt
     # auto-queues the connection so the connected slot below runs on the GUI
     # thread instead.
-    odom_updated = QtCore.Signal(float, float, float, float, float, float)
+    odom_updated = QtCore.Signal(str, float, float, float, float, float, float)
     image_updated = QtCore.Signal(QtGui.QImage)
 
     def __init__(self):
@@ -42,18 +42,16 @@ class MyWidget(QtWidgets.QWidget):
         self.pen_servo_layout = QtWidgets.QVBoxLayout()
         self.button_pen = self.generate_button(name="Drive Pen", sub_layout=self.pen_servo_layout, row=2, column=0)
         self.button_pen.clicked.connect(self.on_drive_pen)
-        # button for driving servo
-        # sub layout for servo on/off
-        self.servo_layout = QtWidgets.QHBoxLayout()
-        self.button_servo_on = self.generate_button(name="Servo On", sub_layout=self.servo_layout)
-        self.button_servo_off = self.generate_button(name="Servo Off", sub_layout=self.servo_layout)
-        self.button_servo_on.clicked.connect(lambda: self.on_servo(True))
-        self.button_servo_off.clicked.connect(lambda: self.on_servo(False))
-        self.pen_servo_layout.addLayout(self.servo_layout)
+        # toggle button for driving servo (checked = on)
+        self.button_servo = self.generate_button(name="Servo", sub_layout=self.pen_servo_layout, checkable=True)
+        self.button_servo.clicked.connect(self.on_servo)
+        self.update_toggle_text(self.button_servo, "Servo", False)
         self.layout.addLayout(self.pen_servo_layout, 2, 0)
 
         # input line for selecting robot
         self.setup_robot_selection(row=0, column=0)
+        # indicator showing whether key events currently reach keyPressEvent
+        self.setup_teleop_indicator(row=0, column=1, height=1, width=2)
 
         # state viewer, with target pose control placed beside it
         self.setup_state_viewer()
@@ -65,12 +63,30 @@ class MyWidget(QtWidgets.QWidget):
         # onboard camera viewer
         self.setup_image_viewer(row=1, column=1)
 
-        # grid ratio: column 1 (image/state viewer side) always gets 70% of the window width
-        self.layout.setColumnStretch(0, 3)
-        self.layout.setColumnStretch(1, 7)
-        self.layout.setRowStretch(0, 1)
+        # control panel column: impedance settings (tabbed, so modes that are never
+        # used at the same time can share the space) and attitude command below it
+        control_layout = QtWidgets.QVBoxLayout()
+        self.control_tabs = QtWidgets.QTabWidget()
+        self.control_tabs.addTab(self.create_impedance_panel(), "Impedance")
+        control_layout.addWidget(self.control_tabs)
+        control_layout.addWidget(self.create_attitude_panel())
+        control_layout.addStretch()
+        self.layout.addLayout(control_layout, 1, 2, 2, 1)
+
+        # grid ratio: instruction : viewer : control panel = 2 : 5 : 3
+        self.layout.setColumnStretch(0, 2)
+        self.layout.setColumnStretch(1, 5)
+        self.layout.setColumnStretch(2, 3)
+        self.layout.setRowStretch(0, 0)
         self.layout.setRowStretch(1, 2)
         self.layout.setRowStretch(2, 1)
+
+        # keyboard teleop only works while no text-entry widget holds focus:
+        # watch focus changes for the indicator, and catch Esc app-wide to release focus
+        self.latest_position = None
+        app = QtWidgets.QApplication.instance()
+        app.focusChanged.connect(self.on_focus_changed)
+        app.installEventFilter(self)
 
     def setup_instruction(self, row=1, column=0, width=1, height=1):
         msg = """
@@ -86,6 +102,7 @@ class MyWidget(QtWidgets.QWidget):
         <b>a        s           d           ]</b><br>
         (move left)  (backward) (move right) (move down)<br>
         Please don't have caps lock on.<br>
+        <b>Esc</b>: leave input field (re-enable keys)<br>
         CTRL+c to quit<br>
         ---------------------------<br>
         """
@@ -110,6 +127,10 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_halt = rospy.Publisher(namespace + "/teleop_command/halt", Empty, queue_size=1)
         self.pub_nav = rospy.Publisher(namespace + "/uav/nav", FlightNav, queue_size=1)
         self.pub_target_pose = rospy.Publisher(namespace + "/target_pose", PoseStamped, queue_size=10)
+        self.pub_impedance_flag = rospy.Publisher(namespace + "/impedance_flag", Bool, queue_size=1)
+        self.pub_impedance_direction = rospy.Publisher(namespace + "/impedance_direction", Vector3, queue_size=1)
+        self.pub_impedance_pos = rospy.Publisher(namespace + "/desire_pos_for_impedance", Vector3, queue_size=1)
+        self.pub_target_rpy = rospy.Publisher(namespace + "/final_target_baselink_rpy", Vector3Stamped, queue_size=1)
         self.xy_vel = rospy.get_param("~xy_vel", 0.02)
         self.z_vel = rospy.get_param("~z_vel", 0.02)
         self.yaw_vel = rospy.get_param("~yaw_vel", 0.02)
@@ -132,9 +153,18 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_halt.unregister()
         self.pub_nav.unregister()
         self.pub_target_pose.unregister()
+        self.pub_impedance_flag.unregister()
+        self.pub_impedance_direction.unregister()
+        self.pub_impedance_pos.unregister()
+        self.pub_target_rpy.unregister()
         self.setup_robot_controller(self.input_line.text())
         self.robot_ns = self.input_line.text()
         self.input_label.setText("Robot namespace: " + self.robot_ns)
+        # re-subscribe odom of the new robot and clear values of the previous one
+        self.sub_state.unregister()
+        self.subscribe_state(self.robot_ns)
+        self.reset_state_text()
+        self.latest_position = None
 
     # keyboard teleop (see reference/keyboard_command.py)
     def keyPressEvent(self, event):
@@ -188,25 +218,86 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_nav.publish(nav_msg)
 
     # button settings
-    def generate_button(self, name, sub_layout=False, row=0, column=0, height=1, width=1):
+    def generate_button(self, name, sub_layout=False, row=0, column=0, height=1, width=1, checkable=False):
         button = QtWidgets.QPushButton()
         button.setObjectName(name)
         button.setText(name)
+        if checkable:
+            # toggle button: checked state = last state sent from this GUI
+            button.setCheckable(True)
+            button.setStyleSheet("QPushButton:checked { background-color: #4caf50; color: white; font-weight: bold; }")
         if sub_layout == False:
             self.layout.addWidget(button, row, column, height, width)
         else:
             sub_layout.addWidget(button)
         return button
 
+    def update_toggle_text(self, button, name, state):
+        button.setText("{}: {}".format(name, "ON" if state else "OFF"))
+
     def on_drive_pen(self):
         self.pub_drive_pen.publish(Empty())
 
     def on_servo(self, state):
         self.pub_servo.publish(Bool(data=state))
+        self.update_toggle_text(self.button_servo, "Servo", state)
+
+    # keyboard focus handling: text-entry widgets swallow teleop keys while focused
+    TEXT_INPUT_WIDGETS = (QtWidgets.QLineEdit, QtWidgets.QAbstractSpinBox, QtWidgets.QComboBox)
+
+    def setup_teleop_indicator(self, row=0, column=1, height=1, width=1):
+        self.teleop_indicator = QtWidgets.QLabel()
+        self.teleop_indicator.setAlignment(QtCore.Qt.AlignCenter)
+        self.layout.addWidget(self.teleop_indicator, row, column, height, width)
+        self.update_teleop_indicator(False)
+
+    def update_teleop_indicator(self, active):
+        if active:
+            text = "Keyboard teleop: ACTIVE"
+            color = "#4caf50"
+        else:
+            text = "Keyboard teleop: INACTIVE (press Esc or click empty space)"
+            color = "#e53935"
+        self.teleop_indicator.setText(text)
+        self.teleop_indicator.setStyleSheet(
+            "QLabel { background-color: %s; color: white; font-weight: bold; padding: 4px; border-radius: 4px; }" % color)
+
+    def on_focus_changed(self, old, new):
+        active = (new is not None
+                  and (new is self or self.isAncestorOf(new))
+                  and not isinstance(new, self.TEXT_INPUT_WIDGETS))
+        self.update_teleop_indicator(active)
+
+    def release_input_focus(self):
+        self.setFocus(QtCore.Qt.OtherFocusReason)
+
+    def eventFilter(self, watched, event):
+        # Esc is caught app-wide because focused input widgets would otherwise consume it
+        if event.type() == QtCore.QEvent.KeyPress and event.key() == QtCore.Qt.Key_Escape:
+            focus = QtWidgets.QApplication.focusWidget()
+            if focus is not None and self.isAncestorOf(focus):
+                self.release_input_focus()
+                return True
+        return super().eventFilter(watched, event)
+
+    def mousePressEvent(self, event):
+        # clicks on empty space (or labels such as the image viewer) end up here
+        self.release_input_focus()
+        super().mousePressEvent(event)
 
     def setup_state_viewer(self):
-        self.sub_state = rospy.Subscriber(self.robot_ns + "/uav/cog/odom", Odometry, self.cb_odom)
+        self.subscribe_state(self.robot_ns)
         self.odom_updated.connect(self.update_state_text)
+        self.state_text = QtWidgets.QLabel()
+        self.state_text.setStyleSheet("QLabel { font-family: monospace; }")
+        self.state_text.setFixedWidth(200)
+        self.reset_state_text()
+
+    def subscribe_state(self, namespace):
+        # namespace is passed to the callback so odom still in flight from a previous robot can be dropped
+        self.sub_state = rospy.Subscriber(namespace + "/uav/cog/odom", Odometry, self.cb_odom, callback_args=namespace)
+
+    def reset_state_text(self):
         msg = """
         <b>COG</b><br>
         x:     ---<br>
@@ -216,11 +307,9 @@ class MyWidget(QtWidgets.QWidget):
         pitch: ---<br>
         yaw:   ---<br>
         """
-        self.state_text = QtWidgets.QLabel(msg)
-        self.state_text.setStyleSheet("QLabel { font-family: monospace; }")
-        self.state_text.setFixedWidth(200)
+        self.state_text.setText(msg)
 
-    def cb_odom(self, msg):
+    def cb_odom(self, msg, namespace):
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         z = msg.pose.pose.position.z
@@ -231,9 +320,12 @@ class MyWidget(QtWidgets.QWidget):
         roll, pitch, yaw = rotation.as_euler("xyz")
         # emit instead of touching the widget here: this callback runs on rospy's
         # subscriber thread, not the GUI thread
-        self.odom_updated.emit(x, y, z, roll, pitch, yaw)
+        self.odom_updated.emit(namespace, x, y, z, roll, pitch, yaw)
 
-    def update_state_text(self, x, y, z, roll, pitch, yaw):
+    def update_state_text(self, namespace, x, y, z, roll, pitch, yaw):
+        # a message from the previous robot may arrive right after a namespace change
+        if namespace != self.robot_ns:
+            return
         msg = """
         <b>COG</b><br>
         x:     {:+7.3f}<br>
@@ -244,9 +336,11 @@ class MyWidget(QtWidgets.QWidget):
         yaw:   {:+7.3f}<br>
         """.format(x, y, z, roll, pitch, yaw)
         self.state_text.setText(msg)
+        # kept for "Use Current" in the impedance panel (updated on the GUI thread)
+        self.latest_position = (x, y, z)
 
     # number of preset x/y/z input+send panels shown side by side, all publishing to the same topic
-    NUM_TARGET_POSE_PANELS = 3
+    NUM_TARGET_POSE_PANELS = 2
 
     def setup_target_pose_control(self):
         self.target_pose_widget = QtWidgets.QWidget()
@@ -303,6 +397,123 @@ class MyWidget(QtWidgets.QWidget):
 
         self.pub_target_pose.publish(msg)
         rospy.loginfo("Published PoseStamped: (%.3f, %.3f, %.3f) time=now+10s", x, y, z)
+
+    # row of labeled spin boxes (e.g. x/y/z); returns (layout, {axis: QDoubleSpinBox})
+    def create_vector_inputs(self, axes, minimum, maximum, step, default=0.0, decimals=3, unit=""):
+        vector_layout = QtWidgets.QHBoxLayout()
+        inputs = {}
+        for axis in axes:
+            vector_layout.addWidget(QtWidgets.QLabel(axis + ":"))
+            spin_box = QtWidgets.QDoubleSpinBox()
+            spin_box.setRange(minimum, maximum)
+            spin_box.setSingleStep(step)
+            spin_box.setDecimals(decimals)
+            spin_box.setValue(default.get(axis, 0.0) if isinstance(default, dict) else default)
+            if unit:
+                spin_box.setSuffix(" " + unit)
+            vector_layout.addWidget(spin_box)
+            inputs[axis] = spin_box
+        return vector_layout, inputs
+
+    def create_impedance_panel(self):
+        panel = QtWidgets.QWidget()
+        impedance_layout = QtWidgets.QVBoxLayout(panel)
+
+        self.button_impedance = self.generate_button(name="Impedance", sub_layout=impedance_layout, checkable=True)
+        self.button_impedance.clicked.connect(self.on_impedance_flag)
+        self.update_toggle_text(self.button_impedance, "Impedance", False)
+
+        direction_box = QtWidgets.QGroupBox("Direction")
+        direction_layout = QtWidgets.QVBoxLayout(direction_box)
+        axes_layout, self.impedance_direction_inputs = self.create_vector_inputs(
+            ("x", "y", "z"), -10.0, 10.0, 0.1, default={"x": 1.0})
+        direction_layout.addLayout(axes_layout)
+        button_direction = self.generate_button(name="Set Direction", sub_layout=direction_layout)
+        button_direction.clicked.connect(self.on_impedance_direction)
+        impedance_layout.addWidget(direction_box)
+
+        pos_box = QtWidgets.QGroupBox("Desired Position")
+        pos_layout = QtWidgets.QVBoxLayout(pos_box)
+        axes_layout, self.impedance_pos_inputs = self.create_vector_inputs(
+            ("x", "y", "z"), -10.0, 10.0, 0.05, unit="m")
+        pos_layout.addLayout(axes_layout)
+        pos_button_layout = QtWidgets.QHBoxLayout()
+        button_use_current = self.generate_button(name="Use Current", sub_layout=pos_button_layout)
+        button_use_current.clicked.connect(self.on_use_current_position)
+        button_pos = self.generate_button(name="Set Pos", sub_layout=pos_button_layout)
+        button_pos.clicked.connect(self.on_impedance_pos)
+        pos_layout.addLayout(pos_button_layout)
+        impedance_layout.addWidget(pos_box)
+
+        impedance_layout.addStretch()
+        return panel
+
+    def on_impedance_flag(self, state):
+        self.pub_impedance_flag.publish(Bool(data=state))
+        self.update_toggle_text(self.button_impedance, "Impedance", state)
+
+    def on_impedance_direction(self):
+        inputs = self.impedance_direction_inputs
+        msg = Vector3(x=inputs["x"].value(), y=inputs["y"].value(), z=inputs["z"].value())
+        self.pub_impedance_direction.publish(msg)
+        rospy.loginfo("Published impedance direction: (%.3f, %.3f, %.3f)", msg.x, msg.y, msg.z)
+
+    def on_use_current_position(self):
+        if self.latest_position is None:
+            rospy.logwarn("No odometry received yet")
+            return
+        for axis, value in zip(("x", "y", "z"), self.latest_position):
+            self.impedance_pos_inputs[axis].setValue(value)
+
+    def on_impedance_pos(self):
+        inputs = self.impedance_pos_inputs
+        msg = Vector3(x=inputs["x"].value(), y=inputs["y"].value(), z=inputs["z"].value())
+        self.pub_impedance_pos.publish(msg)
+        rospy.loginfo("Published impedance desired position: (%.3f, %.3f, %.3f)", msg.x, msg.y, msg.z)
+
+    # safety limit [rad] for each of roll/pitch/yaw sent to final_target_baselink_rpy
+    RPY_LIMIT = 0.6
+
+    def create_attitude_panel(self):
+        attitude_box = QtWidgets.QGroupBox("Attitude (RPY)")
+        attitude_layout = QtWidgets.QVBoxLayout(attitude_box)
+
+        self.rpy_inputs = {}
+        for axis in ("roll", "pitch", "yaw"):
+            axis_layout, inputs = self.create_vector_inputs(
+                (axis,), -self.RPY_LIMIT, self.RPY_LIMIT, 0.05, unit="rad")
+            attitude_layout.addLayout(axis_layout)
+            self.rpy_inputs.update(inputs)
+
+        rpy_button_layout = QtWidgets.QHBoxLayout()
+        button_rpy = self.generate_button(name="Send RPY", sub_layout=rpy_button_layout)
+        button_rpy.clicked.connect(self.on_send_rpy)
+        button_level = self.generate_button(name="Level (r,p=0)", sub_layout=rpy_button_layout)
+        button_level.clicked.connect(self.on_level_rpy)
+        attitude_layout.addLayout(rpy_button_layout)
+        return attitude_box
+
+    def on_send_rpy(self):
+        roll = self.rpy_inputs["roll"].value()
+        pitch = self.rpy_inputs["pitch"].value()
+        yaw = self.rpy_inputs["yaw"].value()
+        # the spin boxes are already range-limited; check again so nothing out of range is ever published
+        if max(abs(roll), abs(pitch), abs(yaw)) > self.RPY_LIMIT:
+            rospy.logwarn("RPY out of range (limit: +-%.2f rad)", self.RPY_LIMIT)
+            return
+
+        msg = Vector3Stamped()
+        msg.vector.x = roll
+        msg.vector.y = pitch
+        msg.vector.z = yaw
+        self.pub_target_rpy.publish(msg)
+        rospy.loginfo("Published target baselink rpy: (%.3f, %.3f, %.3f)", roll, pitch, yaw)
+
+    def on_level_rpy(self):
+        # keep yaw as entered, only level roll/pitch
+        self.rpy_inputs["roll"].setValue(0.0)
+        self.rpy_inputs["pitch"].setValue(0.0)
+        self.on_send_rpy()
 
     def setup_image_viewer(self, row=2, column=1, width=1, height=1):
         self.sub_image = rospy.Subscriber("/usb_cam/image_raw", Image, self.cb_image)
