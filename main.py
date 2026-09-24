@@ -530,6 +530,10 @@ class MyWidget(QtWidgets.QWidget):
         self.image_viewer = QtWidgets.QLabel()
         # let the label grow/shrink with its column instead of sizing to the pixmap
         self.image_viewer.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        # QLabel's minimum size hint equals the pixmap size even with scaled contents,
+        # which would stop the window from shrinking below the camera resolution
+        self.image_viewer.setMinimumSize(1, 1)
+        # scaled by Qt at paint time (cheap; aspect ratio is not kept)
         self.image_viewer.setScaledContents(True)
         pixmap = QtGui.QPixmap("image.png")
         self.image_viewer.setPixmap(pixmap)
