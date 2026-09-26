@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import sys
+import os
+import glob
 import random
+import yaml
 from PySide6 import QtCore, QtWidgets, QtGui
 import rospy
 import numpy as np
 from std_msgs.msg import Empty, Bool
-from aerial_robot_msgs.msg import FlightNav
+from aerial_robot_msgs.msg import FlightNav, SimpleFlightNav
 from nav_msgs.msg import Odometry
 from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import Pose, Quaternion, PoseStamped, Vector3, Vector3Stamped
@@ -51,14 +54,14 @@ class MyWidget(QtWidgets.QWidget):
         # input line for selecting robot
         self.setup_robot_selection(row=0, column=0)
         # indicator showing whether key events currently reach keyPressEvent
-        self.setup_teleop_indicator(row=0, column=1, height=1, width=2)
+        self.setup_teleop_indicator(row=0, column=1)
 
-        # state viewer, with target pose control placed beside it
+        # state viewer, with target pose control (tabbed per topic) placed beside it
         self.setup_state_viewer()
         self.setup_target_pose_control()
         state_row_layout = QtWidgets.QHBoxLayout()
         state_row_layout.addWidget(self.state_text)
-        state_row_layout.addWidget(self.target_pose_widget)
+        state_row_layout.addWidget(self.target_tabs)
         self.layout.addLayout(state_row_layout, 2, 1)
         # onboard camera viewer
         self.setup_image_viewer(row=1, column=1)
@@ -87,6 +90,10 @@ class MyWidget(QtWidgets.QWidget):
         app = QtWidgets.QApplication.instance()
         app.focusChanged.connect(self.on_focus_changed)
         app.installEventFilter(self)
+
+        # preset selector is set up last: loading a preset writes into the input widgets created above
+        self.setup_preset_selector(row=0, column=2)
+        self.load_startup_preset()
 
     def setup_instruction(self, row=1, column=0, width=1, height=1):
         msg = """
@@ -127,6 +134,7 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_halt = rospy.Publisher(namespace + "/teleop_command/halt", Empty, queue_size=1)
         self.pub_nav = rospy.Publisher(namespace + "/uav/nav", FlightNav, queue_size=1)
         self.pub_target_pose = rospy.Publisher(namespace + "/target_pose", PoseStamped, queue_size=10)
+        self.pub_simple_nav = rospy.Publisher(namespace + "/simple_nav", SimpleFlightNav, queue_size=1)
         self.pub_impedance_flag = rospy.Publisher(namespace + "/impedance_flag", Bool, queue_size=1)
         self.pub_impedance_direction = rospy.Publisher(namespace + "/impedance_direction", Vector3, queue_size=1)
         self.pub_impedance_pos = rospy.Publisher(namespace + "/desire_pos_for_impedance", Vector3, queue_size=1)
@@ -153,6 +161,7 @@ class MyWidget(QtWidgets.QWidget):
         self.pub_halt.unregister()
         self.pub_nav.unregister()
         self.pub_target_pose.unregister()
+        self.pub_simple_nav.unregister()
         self.pub_impedance_flag.unregister()
         self.pub_impedance_direction.unregister()
         self.pub_impedance_pos.unregister()
@@ -339,24 +348,33 @@ class MyWidget(QtWidgets.QWidget):
         # kept for "Use Current" in the impedance panel (updated on the GUI thread)
         self.latest_position = (x, y, z)
 
-    # number of preset x/y/z input+send panels shown side by side, all publishing to the same topic
+    # number of preset x/y/z input+send panels shown side by side in each tab
     NUM_TARGET_POSE_PANELS = 2
+    # tab key -> (tab label, panel title, send button name); each tab publishes to its own topic
+    TARGET_POSE_MODES = {
+        "target_pose": ("Target Pose", "Target Pose", "Send Pose"),
+        "simple_nav": ("Simple Nav", "Simple Nav", "Send Nav"),
+    }
 
     def setup_target_pose_control(self):
-        self.target_pose_widget = QtWidgets.QWidget()
-        panels_layout = QtWidgets.QHBoxLayout(self.target_pose_widget)
-        panels_layout.setContentsMargins(0, 0, 0, 0)
+        # only one of the target topics is used at a time, so they share the space as tabs
+        self.target_tabs = QtWidgets.QTabWidget()
+        self.target_pose_inputs = {}
+        for mode, (tab_label, _, _) in self.TARGET_POSE_MODES.items():
+            tab = QtWidgets.QWidget()
+            panels_layout = QtWidgets.QHBoxLayout(tab)
+            self.target_pose_inputs[mode] = []
+            for index in range(self.NUM_TARGET_POSE_PANELS):
+                panels_layout.addWidget(self.create_target_pose_panel(mode, index))
+            self.target_tabs.addTab(tab, tab_label)
 
-        self.target_pose_inputs = []
-        for index in range(self.NUM_TARGET_POSE_PANELS):
-            panels_layout.addWidget(self.create_target_pose_panel(index))
-
-    def create_target_pose_panel(self, index):
+    def create_target_pose_panel(self, mode, index):
+        _, title, button_name = self.TARGET_POSE_MODES[mode]
         panel = QtWidgets.QWidget()
         pose_layout = QtWidgets.QVBoxLayout(panel)
         pose_layout.setContentsMargins(0, 0, 0, 0)
 
-        pose_layout.addWidget(QtWidgets.QLabel("<b>Target Pose {}</b>".format(index + 1)))
+        pose_layout.addWidget(QtWidgets.QLabel("<b>{} {}</b>".format(title, index + 1)))
 
         inputs = {}
         for axis in ("x", "y", "z"):
@@ -367,14 +385,14 @@ class MyWidget(QtWidgets.QWidget):
             axis_layout.addWidget(line_edit)
             pose_layout.addLayout(axis_layout)
             inputs[axis] = line_edit
-        self.target_pose_inputs.append(inputs)
+        self.target_pose_inputs[mode].append(inputs)
 
-        button_send_pose = self.generate_button(name="Send Pose {}".format(index + 1), sub_layout=pose_layout)
-        button_send_pose.clicked.connect(lambda checked=False, index=index: self.on_send_target_pose(index))
+        button_send_pose = self.generate_button(name="{} {}".format(button_name, index + 1), sub_layout=pose_layout)
+        button_send_pose.clicked.connect(lambda checked=False, mode=mode, index=index: self.on_send_target_pose(mode, index))
         return panel
 
-    def on_send_target_pose(self, index):
-        inputs = self.target_pose_inputs[index]
+    def on_send_target_pose(self, mode, index):
+        inputs = self.target_pose_inputs[mode][index]
         try:
             x = float(inputs["x"].text())
             y = float(inputs["y"].text())
@@ -387,6 +405,12 @@ class MyWidget(QtWidgets.QWidget):
             rospy.logwarn("too low z value")
             return
 
+        if mode == "simple_nav":
+            self.publish_simple_nav(x, y, z)
+        else:
+            self.publish_target_pose(x, y, z)
+
+    def publish_target_pose(self, x, y, z):
         msg = PoseStamped()
         msg.header.frame_id = "world"
         msg.header.stamp = rospy.Time.now() + rospy.Duration(10.0)
@@ -397,6 +421,18 @@ class MyWidget(QtWidgets.QWidget):
 
         self.pub_target_pose.publish(msg)
         rospy.loginfo("Published PoseStamped: (%.3f, %.3f, %.3f) time=now+10s", x, y, z)
+
+    def publish_simple_nav(self, x, y, z):
+        msg = SimpleFlightNav()
+        msg.x_control_mode = SimpleFlightNav.POS_MODE
+        msg.y_control_mode = SimpleFlightNav.POS_MODE
+        msg.z_control_mode = SimpleFlightNav.POS_MODE
+        msg.pos_x = x
+        msg.pos_y = y
+        msg.pos_z = z
+
+        self.pub_simple_nav.publish(msg)
+        rospy.loginfo("Published SimpleFlightNav (POS_MODE): (%.3f, %.3f, %.3f)", x, y, z)
 
     # row of labeled spin boxes (e.g. x/y/z); returns (layout, {axis: QDoubleSpinBox})
     def create_vector_inputs(self, axes, minimum, maximum, step, default=0.0, decimals=3, unit=""):
@@ -514,6 +550,139 @@ class MyWidget(QtWidgets.QWidget):
         self.rpy_inputs["roll"].setValue(0.0)
         self.rpy_inputs["pitch"].setValue(0.0)
         self.on_send_rpy()
+
+    # presets of input values: one YAML file per preset in this directory (see presets/default.yaml)
+    PRESET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presets")
+
+    def setup_preset_selector(self, row=0, column=2, height=1, width=1):
+        preset_layout = QtWidgets.QHBoxLayout()
+        preset_layout.addWidget(QtWidgets.QLabel("Preset:"))
+        self.preset_combo = QtWidgets.QComboBox()
+        self.preset_combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        preset_layout.addWidget(self.preset_combo)
+        button_load = self.generate_button(name="Load", sub_layout=preset_layout)
+        button_load.clicked.connect(self.on_load_preset)
+        # re-scan PRESET_DIR so files added/renamed while the GUI is running show up
+        button_refresh = self.generate_button(name="Refresh", sub_layout=preset_layout)
+        button_refresh.clicked.connect(self.refresh_preset_list)
+        self.layout.addLayout(preset_layout, row, column, height, width)
+        self.refresh_preset_list()
+
+    def refresh_preset_list(self):
+        current = self.preset_combo.currentText()
+        self.preset_combo.clear()
+        for path in sorted(glob.glob(os.path.join(self.PRESET_DIR, "*.yaml"))):
+            self.preset_combo.addItem(os.path.splitext(os.path.basename(path))[0], path)
+        index = self.preset_combo.findText(current)
+        if index >= 0:
+            self.preset_combo.setCurrentIndex(index)
+
+    def load_startup_preset(self):
+        # ~preset: name of the preset (file name without .yaml) applied at startup
+        name = rospy.get_param("~preset", "default")
+        index = self.preset_combo.findText(name)
+        if index < 0:
+            if rospy.has_param("~preset"):
+                rospy.logwarn("Preset '%s' not found in %s", name, self.PRESET_DIR)
+            return
+        self.preset_combo.setCurrentIndex(index)
+        self.load_preset(self.preset_combo.itemData(index))
+
+    def on_load_preset(self):
+        path = self.preset_combo.currentData()
+        if path is None:
+            rospy.logwarn("No preset file in %s", self.PRESET_DIR)
+            return
+        self.load_preset(path)
+        # the combo box took focus; hand it back so keyboard teleop works again
+        self.release_input_focus()
+
+    def load_preset(self, path):
+        # only fills the input widgets; nothing is published until a send button is pressed
+        try:
+            with open(path) as f:
+                preset = yaml.safe_load(f)
+            namespace, line_edit_values, spin_box_values = self.parse_preset(preset)
+        except (OSError, yaml.YAMLError, ValueError) as e:
+            rospy.logwarn("Failed to load preset %s: %s", path, e)
+            QtWidgets.QMessageBox.warning(self, "Preset", "Failed to load preset:\n{}\n\n{}".format(path, e))
+            return False
+
+        for line_edit, text in line_edit_values:
+            line_edit.setText(text)
+        for spin_box, value in spin_box_values:
+            spin_box.setValue(value)
+        if namespace is not None and namespace != self.robot_ns:
+            self.input_line.setText(namespace)
+            self.returnPressedLineedit()
+        rospy.loginfo("Loaded preset: %s", path)
+        return True
+
+    def parse_preset(self, preset):
+        # the whole file is validated before anything is applied, so a typo never leaves
+        # the inputs half-updated; keys left out of the file keep the current values
+        if preset is None:
+            preset = {}
+        self.check_preset_keys(preset, ("namespace", "target_pose", "impedance", "rpy"), "preset")
+        line_edit_values = []
+        spin_box_values = []
+
+        namespace = preset.get("namespace")
+        if namespace is not None and not isinstance(namespace, str):
+            raise ValueError("namespace: must be a string")
+
+        targets = preset.get("target_pose") or {}
+        self.check_preset_keys(targets, tuple(self.TARGET_POSE_MODES), "target_pose")
+        for mode, panels in targets.items():
+            name = "target_pose.{}".format(mode)
+            if not isinstance(panels, list) or len(panels) > self.NUM_TARGET_POSE_PANELS:
+                raise ValueError("{}: must be a list of at most {} entries".format(name, self.NUM_TARGET_POSE_PANELS))
+            for index, values in enumerate(panels):
+                # null entry keeps that panel as is
+                if values is None:
+                    continue
+                inputs = self.target_pose_inputs[mode][index]
+                for axis, value in self.parse_preset_vector(values, ("x", "y", "z"), "{}[{}]".format(name, index)).items():
+                    line_edit_values.append((inputs[axis], str(value)))
+
+        impedance = preset.get("impedance") or {}
+        self.check_preset_keys(impedance, ("direction", "desired_pos"), "impedance")
+        if "direction" in impedance:
+            spin_box_values += self.parse_preset_spin_boxes(impedance["direction"], self.impedance_direction_inputs, "impedance.direction")
+        if "desired_pos" in impedance:
+            spin_box_values += self.parse_preset_spin_boxes(impedance["desired_pos"], self.impedance_pos_inputs, "impedance.desired_pos")
+
+        if "rpy" in preset:
+            spin_box_values += self.parse_preset_spin_boxes(preset["rpy"], self.rpy_inputs, "rpy")
+        return namespace, line_edit_values, spin_box_values
+
+    def check_preset_keys(self, values, keys, name):
+        if not isinstance(values, dict):
+            raise ValueError("{}: must be a mapping".format(name))
+        unknown = set(values) - set(keys)
+        if unknown:
+            raise ValueError("{}: unknown key(s) {} (allowed: {})".format(name, sorted(unknown, key=str), ", ".join(keys)))
+
+    def parse_preset_vector(self, values, axes, name):
+        self.check_preset_keys(values, axes, name)
+        result = {}
+        for axis, value in values.items():
+            # bool is a subclass of int, but "x: true" is certainly a mistake
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("{}.{}: must be a number, got {!r}".format(name, axis, value))
+            result[axis] = float(value)
+        return result
+
+    def parse_preset_spin_boxes(self, values, inputs, name):
+        spin_box_values = []
+        for axis, value in self.parse_preset_vector(values, tuple(inputs), name).items():
+            spin_box = inputs[axis]
+            # rejected rather than silently clamped by the spin box (this also keeps rpy within RPY_LIMIT)
+            if not spin_box.minimum() <= value <= spin_box.maximum():
+                raise ValueError("{}.{}: {} is out of range [{}, {}]".format(
+                    name, axis, value, spin_box.minimum(), spin_box.maximum()))
+            spin_box_values.append((spin_box, value))
+        return spin_box_values
 
     def setup_image_viewer(self, row=2, column=1, width=1, height=1):
         self.sub_image = rospy.Subscriber("/usb_cam/image_raw", Image, self.cb_image)

@@ -1,0 +1,30 @@
+# Preset of input values for control_interface (main.py).
+# One file = one preset. Select it from the "Preset" combo box at the top right and press "Load",
+# or give it at startup with the ROS param ~preset (file name without .yaml, default: "default").
+#
+# - Loading only fills the input fields. Nothing is published until a send button is pressed.
+# - Any key can be omitted; omitted fields keep their current values.
+# - The whole file is checked before applying. On an error (unknown key, non-number,
+#   out-of-range value) nothing is changed and a warning dialog is shown.
+
+# Robot namespace. Changing it re-creates the publishers/subscribers, same as typing it in
+# the namespace field and pressing Enter.
+# namespace: gimbalrotor
+
+# x/y/z of the panels in each target tab (at most NUM_TARGET_POSE_PANELS = 2 per tab).
+# Use null for a panel that should be left as is. z < 0.7 can be loaded but is not sent.
+target_pose:
+  target_pose:        # "Target Pose" tab
+    - {x: 0.0, y: 0.0, z: 0.0}
+    - {x: 0.0, y: 0.0, z: 0.0}
+  simple_nav:         # "Simple Nav" tab
+    - {x: 0.0, y: 0.0, z: 0.0}
+    - {x: 0.0, y: 0.0, z: 0.0}
+
+# "Impedance" tab. Each value must be within [-10, 10].
+impedance:
+  direction: {x: 1.0, y: 0.0, z: 0.0}
+  desired_pos: {x: 0.0, y: 0.0, z: 0.0}   # [m]
+
+# "Attitude (RPY)" [rad]. Each value must be within +-0.6 (RPY_LIMIT).
+rpy: {roll: 0.0, pitch: 0.0, yaw: 0.0}

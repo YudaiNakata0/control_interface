@@ -1,0 +1,11 @@
+# Example of a partial preset: only the keys written here are changed (see default.yaml for all keys).
+target_pose:
+  target_pose:
+    - {x: 0.0, y: 0.0, z: 1.0}
+    - {x: 0.5, y: 0.0, z: 1.0}
+  simple_nav:
+    - {x: 0.0, y: 0.0, z: 1.0}
+    - null              # keep panel 2 as is
+
+impedance:
+  direction: {x: 0.0, y: 0.0, z: 1.0}
