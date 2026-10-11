@@ -27,4 +27,4 @@ impedance:
   desired_pos: {x: 2.0, y: 0.0, z: 0.0}   # [m]
 
 # "Attitude (RPY)" [rad]. Each value must be within +-0.6 (RPY_LIMIT).
-rpy: {roll: 0.0, pitch: -0.25, yaw: 0.0}
+rpy: {roll: 0.0, pitch: -0.2, yaw: 0.0}
